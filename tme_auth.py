@@ -1,6 +1,7 @@
 import base64
 import logging
 import os
+import threading
 import time
 
 import requests
@@ -21,6 +22,7 @@ TME_CURRENCY = os.getenv("TME_CURRENCY", "PLN")
 _session = requests.Session()
 _access_token = ""
 _token_expires_at = 0.0
+_token_lock = threading.Lock()
 
 
 def _fetch_token() -> None:
@@ -36,20 +38,29 @@ def _fetch_token() -> None:
         data={"grant_type": "client_credentials"},
         timeout=30,
     )
-    data = resp.json()
+    data = _json(resp)
     if resp.status_code != 200 or "access_token" not in data:
         raise RuntimeError(f"TME auth error ({resp.status_code}): {data.get('message', data)}")
 
     _access_token = data["access_token"]
     # Refresh a little early so an in-flight request never hits an expired token.
-    _token_expires_at = time.time() + int(data.get("expires_in", 300)) - 30
+    _token_expires_at = time.time() + max(int(data.get("expires_in", 300)) - 30, 0)
     logger.info("Obtained TME access token")
 
 
 def _get_token() -> str:
-    if not _access_token or time.time() >= _token_expires_at:
-        _fetch_token()
-    return _access_token
+    with _token_lock:
+        if not _access_token or time.time() >= _token_expires_at:
+            _fetch_token()
+        return _access_token
+
+
+def _json(resp: requests.Response) -> dict:
+    try:
+        data = resp.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _make_request(endpoint: str, params: dict | None = None) -> dict:
@@ -81,11 +92,12 @@ def _make_request(endpoint: str, params: dict | None = None) -> dict:
         logger.info(f"GET {url}")
         resp = _session.get(url, params=query, headers=headers, timeout=30)
         if resp.status_code == 401 and attempt == 0:
-            _fetch_token()
+            with _token_lock:
+                _fetch_token()
             continue
         break
 
-    data = resp.json()
+    data = _json(resp)
     if resp.status_code != 200:
         details = data.get("error_data") or ""
         raise RuntimeError(f"TME API error ({resp.status_code}): {data.get('message', '')} {details}".strip())

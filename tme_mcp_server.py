@@ -2,7 +2,7 @@ import logging
 from urllib.parse import quote
 
 from mcp_app import mcp
-from tme_auth import _make_request, TME_COUNTRY, TME_CURRENCY
+from tme_auth import _make_request, TME_COUNTRY, TME_CURRENCY, TME_LANGUAGE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -78,6 +78,7 @@ def search_parameters(category_id: int, search: str | None = None) -> dict:
         category_id: Category ID to get filter parameters for
         search: Optional search phrase to narrow the parameter set
     """
+    # v2 exposes filter parameters only through search; limit=1 keeps the payload small.
     params = {"category_id": category_id, "phrase": search, "scope": ["parameters"], "limit": 1}
     return _make_request("products/search", params)
 
@@ -107,11 +108,9 @@ def get_products(symbols: list[str] | None = None, mpns: list[str] | None = None
         symbols: List of TME product symbols (max 50)
         mpns: List of manufacturer part numbers (max 50)
     """
-    params = {}
-    if symbols:
-        params["symbols"] = symbols[:50]
-    elif mpns:
-        params["mpns"] = mpns[:50]
+    if bool(symbols) == bool(mpns):
+        raise ValueError("Provide either symbols or mpns")
+    params = {"symbols": symbols[:50]} if symbols else {"mpns": mpns[:50]}
     return _make_request("products", params)
 
 
@@ -163,9 +162,9 @@ def get_related_products(symbol: str) -> dict:
 def _product_data(symbols: list[str], scope: list[str], amounts: list[int] | None = None) -> dict:
     symbols = symbols[:50]
     params = {"symbols": symbols, "scope": scope, "currency": TME_CURRENCY}
-    if amounts is not None:
-        amounts = (amounts + [1] * len(symbols))[: len(symbols)]
-        params["amounts"] = amounts
+    # The API requires amounts for delivery scopes and rejects them for prices/stock.
+    if "delivery" in scope:
+        params["amounts"] = ((amounts or []) + [1] * len(symbols))[: len(symbols)]
     return _make_request("products/data", params)
 
 
@@ -216,7 +215,7 @@ def get_delivery_time(symbols: list[str], amounts: list[int] | None = None) -> d
         symbols: List of TME product symbols (max 50)
         amounts: Quantity per symbol, same order as symbols (defaults to 1 each)
     """
-    return _product_data(symbols, ["delivery"], amounts or [])
+    return _product_data(symbols, ["delivery"], amounts)
 
 
 @mcp.tool()
@@ -226,8 +225,7 @@ def generate_tme_url(symbol: str) -> str:
     Args:
         symbol: TME product symbol
     """
-    country = TME_COUNTRY.lower()
-    return f"https://www.tme.eu/{country}/en/details/{quote(symbol)}/"
+    return f"https://www.tme.eu/{TME_COUNTRY.lower()}/{TME_LANGUAGE}/details/{quote(symbol)}/"
 
 
 # ---------------------------------------------------------------------------
