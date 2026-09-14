@@ -2,11 +2,11 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io/) server for the [TME](https://www.tme.eu) electronic components API, built with [FastMCP](https://github.com/jlowin/fastmcp). Docker-first, designed for the [Docker MCP Toolkit](https://docs.docker.com/ai/mcp-catalog-and-toolkit/).
 
-TME is a major European electronic components distributor based in Poland. Provides 13 tools: product search, details, pricing (with volume tiers), stock levels, datasheets, delivery time, and URL generation.
+TME is a major European electronic components distributor based in Poland. Targets **TME API v2** (OAuth 2.0). Provides 14 tools: product search, details, pricing (with volume tiers), stock levels, datasheets, delivery time, and URL generation.
 
 ## Prerequisites
 
-- **TME API credentials** -- Register at [developers.tme.eu](https://developers.tme.eu), create an application to get your **App Token** and **App Secret**
+- **TME API credentials** -- Register at [developers.tme.eu](https://developers.tme.eu) (requires an active tme.eu customer account), create an application to get your **App Token** and **App Secret**. Applications created after May 14, 2026 only work with API v2, which is what this server uses.
 - **Docker** (recommended) or Python 3.10+
 - **Docker MCP Toolkit** -- included with [Docker Desktop](https://www.docker.com/products/docker-desktop/) (requires MCP Toolkit support)
 
@@ -15,8 +15,8 @@ TME is a major European electronic components distributor based in Poland. Provi
 ```
 tme-mcp/
 ├── mcp_app.py           # Shared FastMCP instance
-├── tme_mcp_server.py    # Main server -- all 13 tools
-├── tme_auth.py          # HMAC-SHA1 signing + API request helper
+├── tme_mcp_server.py    # Main server -- all 14 tools
+├── tme_auth.py          # OAuth 2.0 token handling + API request helper
 ├── Dockerfile           # Docker image with embedded metadata
 ├── pyproject.toml       # Project metadata
 └── LICENSE              # MIT
@@ -62,13 +62,14 @@ registry:
         value: "PLN"
     tools:
       - name: search_products
-      - name: autocomplete
       - name: get_categories
       - name: search_parameters
+      - name: get_manufacturers
       - name: get_products
       - name: get_parameters
       - name: get_product_files
       - name: get_similar_products
+      - name: get_related_products
       - name: get_prices
       - name: get_stocks
       - name: get_prices_and_stocks
@@ -221,19 +222,20 @@ Locale env vars are optional -- defaults are `PL`/`EN`/`PLN` (see [Configuration
 
 | Tool | Description |
 |------|-------------|
-| `search_products` | Search products by keyword or part number, paginated |
-| `autocomplete` | Type-ahead suggestions for a search phrase |
-| `get_categories` | Browse the product category tree |
-| `search_parameters` | Get available filter parameters for a category |
+| `search_products` | Search products by keyword, part number, or category; paginated, sortable |
+| `get_categories` | Browse the product category tree or flat list |
+| `search_parameters` | Get available filter parameters and values for a category |
+| `get_manufacturers` | List manufacturers, optionally per category |
 
 ### Product Details
 
 | Tool | Description |
 |------|-------------|
-| `get_products` | Full product details for up to 50 symbols |
+| `get_products` | Full product details for up to 50 symbols or manufacturer part numbers |
 | `get_parameters` | Technical specifications/attributes for up to 50 symbols |
 | `get_product_files` | Datasheets, photos, and documents for up to 50 symbols |
 | `get_similar_products` | Find alternative/similar parts |
+| `get_related_products` | Find related parts (accessories, complementary items) |
 
 ### Pricing & Stock
 
@@ -257,20 +259,20 @@ All settings are controlled via environment variables. In Docker MCP Toolkit mod
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TME_APP_TOKEN` | *(required)* | API token from developers.tme.eu |
-| `TME_APP_SECRET` | *(required)* | HMAC secret for request signing |
+| `TME_APP_SECRET` | *(required)* | App secret for the OAuth token exchange |
 | `TME_COUNTRY` | `PL` | Country code (e.g. `AT`, `DE`, `PL`) |
-| `TME_LANGUAGE` | `EN` | Language code |
+| `TME_LANGUAGE` | `EN` | Language code, sent as `Accept-Language` |
 | `TME_CURRENCY` | `PLN` | Currency code (e.g. `EUR`, `PLN`) |
 
 ## Authentication
 
-TME uses HMAC-SHA1 per-request signing (not OAuth2). Each API call is individually signed using your App Secret. No token refresh or caching needed -- this means credentials never expire and there are no session/token issues.
+TME API v2 uses OAuth 2.0 client credentials. The server exchanges your App Token and App Secret for a short-lived bearer token (5 minutes) and refreshes it automatically.
 
 ## Troubleshooting
 
 **Gateway shows 0 tools:** Verify the `tools` list in your catalog matches the tool names in the [Tools](#tools) section above.
 
-**Signature errors:** If searches with special characters fail, ensure you're running the latest image. Earlier versions had a signing bug with spaces in search queries.
+**403 Access denied on every call:** Your application is a v2 application but the server is an old (HMAC, legacy API) build. Rebuild the image from this repository.
 
 **Catalog changes not taking effect:** Re-run `docker mcp catalog import ~/.docker/mcp/catalogs/custom.yaml` after editing the catalog file. Restart your MCP client afterward.
 

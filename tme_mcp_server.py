@@ -2,7 +2,7 @@ import logging
 from urllib.parse import quote
 
 from mcp_app import mcp
-from tme_auth import _make_request, TME_COUNTRY, TME_CURRENCY
+from tme_auth import _make_request, TME_COUNTRY, TME_CURRENCY, TME_LANGUAGE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,62 +21,76 @@ logger.info("=== STARTING TME MCP SERVER ===")
 
 @mcp.tool()
 def search_products(
-    search: str,
+    search: str | None = None,
     page: int = 1,
     limit: int = 20,
-    category_id: str | None = None,
+    category_id: int | None = None,
+    manufacturer_id: int | None = None,
     with_stock: bool = False,
+    sort: str | None = None,
 ) -> dict:
-    """Search TME products by keyword or part number.
+    """Search TME products by keyword, part number, or category.
+
+    Provide `search`, `category_id`, or both. Returns products plus result counters.
 
     Args:
-        search: Search phrase or part number
+        search: Search phrase or part number (2-40 characters)
         page: Page number (default: 1)
-        limit: Results per page, max 200 (default: 20)
+        limit: Results per page, 1-100 (default: 20)
         category_id: Optional category ID filter
+        manufacturer_id: Optional manufacturer ID filter
         with_stock: Only return products that are in stock (default: False)
+        sort: Sort order: SYMBOL, ACCURACY, ORIGINAL_SYMBOL, PRICE_FIRST_QUANTITY,
+            PRICE_LAST_QUANTITY, ACCURACY_IN_STOCK_FIRST, AVAILABLE_IN_STOCK_FIRST
     """
-    params = {"SearchPlain": search, "SearchPage": page, "SearchLimit": limit}
+    params = {
+        "phrase": search,
+        "category_id": category_id,
+        "manufacturer_id": manufacturer_id,
+        "page": page,
+        "limit": limit,
+        "scope": ["products", "counters"],
+    }
     if with_stock:
-        params["SearchWithStock"] = "true"
-    if category_id:
-        params["SearchCategory"] = category_id
-    return _make_request("Products/Search", params)
+        params["filter[in_stock]"] = True
+    if sort:
+        params["sort[property]"] = sort
+    return _make_request("products/search", params)
 
 
 @mcp.tool()
-def autocomplete(phrase: str) -> dict:
-    """Get type-ahead suggestions for a search phrase.
+def get_categories(category_id: int | None = None, tree: bool = True) -> dict:
+    """Get TME product categories.
 
     Args:
-        phrase: Partial search string
+        category_id: Root category ID to start from. Omit for the full catalog.
+        tree: Return nested tree (True) or a flat list (False)
     """
-    return _make_request("Products/Autocomplete", {"Phrase": phrase})
+    endpoint = "products/categories/tree" if tree else "products/categories/list"
+    return _make_request(endpoint, {"root_category_id": category_id})
 
 
 @mcp.tool()
-def get_categories(category_id: str | None = None) -> dict:
-    """Get the TME product category tree.
-
-    Args:
-        category_id: Parent category ID to get children of. Omit for top-level categories.
-    """
-    params = {}
-    if category_id:
-        params["CategoryId"] = category_id
-    # Tree=true returns nested subcategories
-    params["Tree"] = "true"
-    return _make_request("Products/GetCategories", params)
-
-
-@mcp.tool()
-def search_parameters(category_id: str) -> dict:
-    """Get available filter parameters for a category.
+def search_parameters(category_id: int, search: str | None = None) -> dict:
+    """Get available filter parameters (and their values) for a category.
 
     Args:
         category_id: Category ID to get filter parameters for
+        search: Optional search phrase to narrow the parameter set
     """
-    return _make_request("Products/SearchParameters", {"CategoryId": category_id})
+    # v2 exposes filter parameters only through search; limit=1 keeps the payload small.
+    params = {"category_id": category_id, "phrase": search, "scope": ["parameters"], "limit": 1}
+    return _make_request("products/search", params)
+
+
+@mcp.tool()
+def get_manufacturers(category_id: int | None = None) -> dict:
+    """List manufacturers, optionally restricted to a category.
+
+    Args:
+        category_id: Optional category ID filter
+    """
+    return _make_request("products/manufacturers", {"category_id": category_id})
 
 
 # ---------------------------------------------------------------------------
@@ -85,14 +99,19 @@ def search_parameters(category_id: str) -> dict:
 
 
 @mcp.tool()
-def get_products(symbols: list[str]) -> dict:
-    """Get full product details for up to 50 TME product symbols.
+def get_products(symbols: list[str] | None = None, mpns: list[str] | None = None) -> dict:
+    """Get full product details for up to 50 TME symbols or manufacturer part numbers.
+
+    Provide either `symbols` or `mpns`.
 
     Args:
         symbols: List of TME product symbols (max 50)
+        mpns: List of manufacturer part numbers (max 50)
     """
-    params = {f"SymbolList[{i}]": s for i, s in enumerate(symbols[:50])}
-    return _make_request("Products/GetProducts", params)
+    if bool(symbols) == bool(mpns):
+        raise ValueError("Provide either symbols or mpns")
+    params = {"symbols": symbols[:50]} if symbols else {"mpns": mpns[:50]}
+    return _make_request("products", params)
 
 
 @mcp.tool()
@@ -102,8 +121,7 @@ def get_parameters(symbols: list[str]) -> dict:
     Args:
         symbols: List of TME product symbols (max 50)
     """
-    params = {f"SymbolList[{i}]": s for i, s in enumerate(symbols[:50])}
-    return _make_request("Products/GetParameters", params)
+    return _make_request("products/parameters", {"symbols": symbols[:50]})
 
 
 @mcp.tool()
@@ -113,8 +131,7 @@ def get_product_files(symbols: list[str]) -> dict:
     Args:
         symbols: List of TME product symbols (max 50)
     """
-    params = {f"SymbolList[{i}]": s for i, s in enumerate(symbols[:50])}
-    return _make_request("Products/GetProductsFiles", params)
+    return _make_request("products/files", {"symbols": symbols[:50]})
 
 
 @mcp.tool()
@@ -124,7 +141,17 @@ def get_similar_products(symbol: str) -> dict:
     Args:
         symbol: TME product symbol
     """
-    return _make_request("Products/GetSimilarProducts", {"Symbol": symbol})
+    return _make_request("products/similar", {"symbol": symbol})
+
+
+@mcp.tool()
+def get_related_products(symbol: str) -> dict:
+    """Get related products (accessories, complementary items) for a given part.
+
+    Args:
+        symbol: TME product symbol
+    """
+    return _make_request("products/related", {"symbol": symbol})
 
 
 # ---------------------------------------------------------------------------
@@ -132,18 +159,25 @@ def get_similar_products(symbol: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _product_data(symbols: list[str], scope: list[str], amounts: list[int] | None = None) -> dict:
+    symbols = symbols[:50]
+    params = {"symbols": symbols, "scope": scope, "currency": TME_CURRENCY}
+    # The API requires amounts for delivery scopes and rejects them for prices/stock.
+    if "delivery" in scope:
+        params["amounts"] = ((amounts or []) + [1] * len(symbols))[: len(symbols)]
+    return _make_request("products/data", params)
+
+
 @mcp.tool()
 def get_prices(symbols: list[str]) -> dict:
-    """Get pricing for up to 50 products.
+    """Get pricing with volume tiers for up to 50 products.
 
     Prices returned in the configured currency (default: {currency}).
 
     Args:
         symbols: List of TME product symbols (max 50)
     """.format(currency=TME_CURRENCY)
-    params = {f"SymbolList[{i}]": s for i, s in enumerate(symbols[:50])}
-    params["Currency"] = TME_CURRENCY
-    return _make_request("Products/GetPrices", params)
+    return _product_data(symbols, ["prices"])
 
 
 @mcp.tool()
@@ -153,8 +187,7 @@ def get_stocks(symbols: list[str]) -> dict:
     Args:
         symbols: List of TME product symbols (max 50)
     """
-    params = {f"SymbolList[{i}]": s for i, s in enumerate(symbols[:50])}
-    return _make_request("Products/GetStocks", params)
+    return _product_data(symbols, ["stock"])
 
 
 @mcp.tool()
@@ -166,9 +199,7 @@ def get_prices_and_stocks(symbols: list[str]) -> dict:
     Args:
         symbols: List of TME product symbols (max 50)
     """.format(currency=TME_CURRENCY)
-    params = {f"SymbolList[{i}]": s for i, s in enumerate(symbols[:50])}
-    params["Currency"] = TME_CURRENCY
-    return _make_request("Products/GetPricesAndStocks", params)
+    return _product_data(symbols, ["prices", "stock"])
 
 
 # ---------------------------------------------------------------------------
@@ -182,16 +213,9 @@ def get_delivery_time(symbols: list[str], amounts: list[int] | None = None) -> d
 
     Args:
         symbols: List of TME product symbols (max 50)
-        amounts: Quantity per symbol (defaults to 1 each if omitted)
+        amounts: Quantity per symbol, same order as symbols (defaults to 1 each)
     """
-    symbols = symbols[:50]
-    if amounts is None:
-        amounts = [1] * len(symbols)
-    elif len(amounts) < len(symbols):
-        amounts = amounts + [1] * (len(symbols) - len(amounts))
-    params = {f"SymbolList[{i}]": s for i, s in enumerate(symbols)}
-    params.update({f"AmountList[{i}]": str(a) for i, a in enumerate(amounts[:len(symbols)])})
-    return _make_request("Products/GetDeliveryTime", params)
+    return _product_data(symbols, ["delivery"], amounts)
 
 
 @mcp.tool()
@@ -201,8 +225,7 @@ def generate_tme_url(symbol: str) -> str:
     Args:
         symbol: TME product symbol
     """
-    country = TME_COUNTRY.lower()
-    return f"https://www.tme.eu/{country}/en/details/{quote(symbol)}/"
+    return f"https://www.tme.eu/{TME_COUNTRY.lower()}/{TME_LANGUAGE}/details/{quote(symbol)}/"
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 [project]
 name = "tme-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "TME electronic components — search, pricing, stock, datasheets"
 license = "MIT"
 dependencies = [
